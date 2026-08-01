@@ -13,6 +13,24 @@ const PORT = 3000;
 
 app.set('trust proxy', 1);
 
+// Enable CORS for cross-origin frontend requests (e.g., from GitHub Pages)
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, x-session-token');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 const sessionsMap = new Map<string, { tokens?: any; user?: any; isDemo?: boolean }>();
 
 app.use(express.json());

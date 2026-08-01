@@ -9,6 +9,7 @@ import {
   PendingAction,
 } from './types';
 import { generateDemoEmails, computeInboxStats } from './lib/demoData';
+import { getApiUrl, getApiBaseUrl } from './lib/api';
 import { Navbar } from './components/Navbar';
 import { Landing } from './components/Landing';
 import { Dashboard } from './components/Dashboard';
@@ -79,7 +80,7 @@ export default function App() {
   // Fetch scanned live emails from backend
   const fetchScannedEmails = useCallback(async () => {
     try {
-      const res = await fetch('/api/emails', { headers: getAuthHeaders() });
+      const res = await fetch(getApiUrl('/api/emails'), { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
@@ -102,7 +103,7 @@ export default function App() {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
 
-      const res = await fetch('/api/auth/status', { headers: getAuthHeaders() });
+      const res = await fetch(getApiUrl('/api/auth/status'), { headers: getAuthHeaders() });
       const data = await res.json();
       if (data.authenticated && data.user) {
         setUser(data.user);
@@ -152,13 +153,28 @@ export default function App() {
 
   // Connect Google OAuth Popup
   const handleConnectGmail = () => {
+    const isGitHubPages = window.location.hostname.includes('github.io');
+    const apiBaseUrl = getApiBaseUrl();
+
+    // If on GitHub Pages and no custom VITE_API_URL set, warn user or fall back gracefully
+    if (isGitHubPages && !apiBaseUrl) {
+      const confirmDemo = window.confirm(
+        'InboxIQ is currently running as a static site on GitHub Pages without a backend URL configured.\n\nTo connect live Gmail accounts on GitHub Pages, set VITE_API_URL in your repository settings or build workflow.\n\nWould you like to try Instant Demo Mode now instead?'
+      );
+      if (confirmDemo) {
+        handleTryDemo();
+      }
+      return;
+    }
+
+    const apiUrl = getApiUrl('/api/auth/google');
     const width = 600;
     const height = 700;
     const left = window.screenX + (window.outerWidth - width) / 2;
     const top = window.screenY + (window.outerHeight - height) / 2;
 
     window.open(
-      '/api/auth/google',
+      apiUrl,
       'InboxIQ Google Login',
       `width=${width},height=${height},left=${left},top=${top},scrollbars=yes`
     );
@@ -167,7 +183,7 @@ export default function App() {
   // Launch Instant Demo Mode
   const handleTryDemo = async () => {
     try {
-      const res = await fetch('/api/auth/demo', { method: 'POST', headers: getAuthHeaders() });
+      const res = await fetch(getApiUrl('/api/auth/demo'), { method: 'POST', headers: getAuthHeaders() });
       const data = await res.json();
       if (data.token) {
         localStorage.setItem('inboxiq_token', data.token);
@@ -184,6 +200,17 @@ export default function App() {
       triggerScan();
     } catch (err) {
       console.error('Failed to start demo:', err);
+      // Fallback demo mode if backend is unreachable
+      const msgs = generateDemoEmails();
+      setAllMessages(msgs);
+      setIsDemo(true);
+      setUser({
+        id: 'demo_user',
+        name: 'Demo Workspace User',
+        email: 'user.demo@gmail.com',
+        picture: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
+      });
+      triggerScan();
     }
   };
 
@@ -224,7 +251,7 @@ export default function App() {
         }, 800);
       } else {
         // Live Google API scan
-        await fetch('/api/scan', {
+        await fetch(getApiUrl('/api/scan'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ limit, sendEmailReport }),
@@ -233,7 +260,7 @@ export default function App() {
         // Poll for progress
         const pollTimer = setInterval(async () => {
           try {
-            const pRes = await fetch('/api/scan/progress', { headers: getAuthHeaders() });
+            const pRes = await fetch(getApiUrl('/api/scan/progress'), { headers: getAuthHeaders() });
             const pData = await pRes.json();
             setScanProgress(pData);
 
@@ -272,7 +299,7 @@ export default function App() {
     });
 
     try {
-      const res = await fetch('/api/mass-clear', {
+      const res = await fetch(getApiUrl('/api/mass-clear'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ query, action }),
@@ -307,7 +334,7 @@ export default function App() {
   // Logout / Disconnect
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST', headers: getAuthHeaders() });
+      await fetch(getApiUrl('/api/auth/logout'), { method: 'POST', headers: getAuthHeaders() });
     } catch (e) {
       console.warn(e);
     }
@@ -374,7 +401,7 @@ export default function App() {
 
     // 4. Send API call to backend (or handles in demo)
     try {
-      await fetch('/api/batch-action', {
+      await fetch(getApiUrl('/api/batch-action'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ action: type, messageIds }),
