@@ -134,19 +134,21 @@ function getOAuth2Client(req?: express.Request) {
   const clientId = process.env.CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '';
   const clientSecret = process.env.CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
 
-  let appUrl = process.env.APP_URL;
-  if (!appUrl && req) {
-    const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
-    const host = (req.headers['x-forwarded-host'] as string) || req.headers.host;
-    if (host) {
-      appUrl = `${proto}://${host}`;
+  let redirectUri = process.env.REDIRECT_URI;
+  if (!redirectUri) {
+    let appUrl = process.env.APP_URL || process.env.NEXTAUTH_URL || process.env.BASE_URL;
+    if (!appUrl && req) {
+      const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+      const host = (req.headers['x-forwarded-host'] as string) || req.headers.host;
+      if (host) {
+        appUrl = `${proto}://${host}`;
+      }
     }
+    if (!appUrl) {
+      appUrl = `http://localhost:${PORT}`;
+    }
+    redirectUri = `${appUrl.replace(/\/$/, '')}/auth/callback`;
   }
-  if (!appUrl) {
-    appUrl = `http://localhost:${PORT}`;
-  }
-
-  const redirectUri = `${appUrl.replace(/\/$/, '')}/auth/callback`;
 
   const client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   return { client, redirectUri };

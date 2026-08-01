@@ -13,19 +13,17 @@ export const UndoToast: React.FC<UndoToastProps> = ({ action, onUndo, onExpire }
   const [timeLeft, setTimeLeft] = useState(30);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          onExpire();
-          return 0;
-        }
-        return prev - 1;
-      });
+    if (timeLeft <= 0) {
+      onExpire();
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setTimeLeft((prev) => prev - 1);
     }, 1000);
 
-    return () => clearInterval(timer);
-  }, [onExpire]);
+    return () => clearTimeout(timer);
+  }, [timeLeft, onExpire]);
 
   const isDelete = action.type === 'delete';
 
