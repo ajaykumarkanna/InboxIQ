@@ -1,10 +1,29 @@
 export const getApiBaseUrl = (): string => {
   const env = (import.meta as any).env || {};
-  const envUrl = env.VITE_API_URL || env.VITE_SERVER_URL || '';
-  if (envUrl) {
-    return envUrl.replace(/\/$/, '');
+  let envUrl = (env.VITE_API_URL || env.VITE_SERVER_URL || '').trim();
+
+  if (!envUrl) return '';
+
+  // Handle markdown pasted link formats like [text](http://...) or http://...](http://...
+  if (envUrl.includes('](')) {
+    const parts = envUrl.split('](');
+    envUrl = parts[1] ? parts[1].replace(/\)$/, '') : parts[0];
   }
-  return '';
+
+  // Strip brackets, parentheses, and leading/trailing whitespace
+  envUrl = envUrl.replace(/^[\[\(]+|[\]\)]+$/g, '').trim();
+
+  // Fix protocol if missing colon e.g. "https//" -> "https://"
+  if (/^https?\/\//i.test(envUrl) && !/^https?:\/\//i.test(envUrl)) {
+    envUrl = envUrl.replace(/^(https?)\/\//i, '$1://');
+  }
+
+  // Add protocol if completely missing relative/absolute hostname
+  if (!/^https?:\/\//i.test(envUrl) && envUrl.includes('.')) {
+    envUrl = `https://${envUrl}`;
+  }
+
+  return envUrl.replace(/\/$/, '');
 };
 
 export const getApiUrl = (path: string): string => {
