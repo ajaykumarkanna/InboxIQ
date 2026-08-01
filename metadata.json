@@ -1,0 +1,6 @@
+{
+  "name": "InboxIQ",
+  "description": "AI-Assisted Gmail Cleanup & Mailbox Intelligence Platform",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
