@@ -58,6 +58,7 @@ export default function App() {
     autoExcludeImportant: true,
     largeAttachmentMinMB: 5,
     oldUnreadMonths: 12,
+    scanLimit: 50000,
   });
 
   // Apply dark mode class to html element
@@ -187,11 +188,12 @@ export default function App() {
   };
 
   // Trigger Scanner
-  const triggerScan = async () => {
+  const triggerScan = async (overrideLimit?: number, sendEmailReport: boolean = true) => {
+    const limit = overrideLimit || settings.scanLimit || 100000;
     setScanProgress({
       status: 'scanning',
       scannedCount: 0,
-      totalFound: isDemo ? 3820 : 500,
+      totalFound: isDemo ? 3820 : limit,
       currentStep: 'Initiating scanning pipeline...',
       progressPercent: 5,
     });
@@ -222,7 +224,11 @@ export default function App() {
         }, 800);
       } else {
         // Live Google API scan
-        await fetch('/api/scan', { method: 'POST', headers: getAuthHeaders() });
+        await fetch('/api/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ limit, sendEmailReport }),
+        });
         
         // Poll for progress
         const pollTimer = setInterval(async () => {
@@ -252,6 +258,49 @@ export default function App() {
         status: 'error',
         errorMessage: 'Failed to start scan',
       }));
+    }
+  };
+
+  // Mass direct query clear for 60k+ inboxes
+  const handleMassClear = async (query: string, action: 'delete' | 'archive') => {
+    setScanProgress({
+      status: 'scanning',
+      scannedCount: 0,
+      totalFound: 0,
+      currentStep: `Bulk clearing matching query: "${query}"...`,
+      progressPercent: 20,
+    });
+
+    try {
+      const res = await fetch('/api/mass-clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ query, action }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setScanProgress({
+          status: 'completed',
+          scannedCount: data.clearedCount,
+          totalFound: data.clearedCount,
+          currentStep: `Successfully ${action === 'delete' ? 'deleted' : 'archived'} ${data.clearedCount.toLocaleString()} emails!`,
+          progressPercent: 100,
+        });
+        await fetchScannedEmails();
+        setTimeout(() => {
+          setScanProgress((prev) => ({ ...prev, status: 'idle' }));
+        }, 1500);
+      }
+    } catch (err) {
+      console.error('Mass clear error:', err);
+      setScanProgress({
+        status: 'error',
+        scannedCount: 0,
+        totalFound: 0,
+        currentStep: 'Failed to mass clear',
+        progressPercent: 0,
+        errorMessage: 'Failed to execute mass clear query',
+      });
     }
   };
 
@@ -380,13 +429,18 @@ export default function App() {
             stats={stats}
             onSelectCategory={(catId) => setActiveCategoryId(catId)}
             onStartScan={triggerScan}
+            onMassClear={handleMassClear}
           />
         )}
       </main>
 
       {/* Active Modals & Overlays */}
       {scanProgress.status === 'scanning' && (
-        <ScanningOverlay progress={scanProgress} />
+        <ScanningOverlay
+          progress={scanProgress}
+          userEmail={user?.email}
+          onDismiss={() => setScanProgress((prev) => ({ ...prev, status: 'idle' }))}
+        />
       )}
 
       {activeCategoryInfo && (

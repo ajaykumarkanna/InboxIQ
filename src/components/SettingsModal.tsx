@@ -102,6 +102,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             />
           </div>
 
+          {/* Scan Capacity / Depth */}
+          <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800">
+            <div>
+              <p className="font-bold text-slate-900 dark:text-white text-sm">Scan Depth Limit</p>
+              <p className="text-slate-500 dark:text-slate-400">Maximum inbox messages to analyze (for 60k+ inboxes)</p>
+            </div>
+            <select
+              value={settings.scanLimit || 50000}
+              onChange={(e) => onUpdateSettings({ ...settings, scanLimit: Number(e.target.value) })}
+              className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1 text-xs font-semibold focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer"
+            >
+              <option value={5000}>5,000 Emails</option>
+              <option value={15000}>15,000 Emails</option>
+              <option value={50000}>50,000 Emails</option>
+              <option value={100000}>Full Inbox (Up to 100k)</option>
+            </select>
+          </div>
+
           {/* Auto Exclude Starred & Important */}
           <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800">
             <div>

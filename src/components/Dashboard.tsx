@@ -26,8 +26,9 @@ import {
 interface DashboardProps {
   stats: InboxStats;
   onSelectCategory: (catId: CategoryId) => void;
-  onStartScan: () => void;
+  onStartScan: (limit?: number) => void;
   onSelectSender?: (senderEmail: string) => void;
+  onMassClear?: (query: string, action: 'delete' | 'archive') => void;
 }
 
 const ICON_MAP: Record<string, React.FC<{ className?: string }>> = {
@@ -43,7 +44,16 @@ const ICON_MAP: Record<string, React.FC<{ className?: string }>> = {
   Clock,
 };
 
-export const Dashboard: React.FC<DashboardProps> = ({ stats, onSelectCategory, onStartScan, onSelectSender }) => {
+export const Dashboard: React.FC<DashboardProps> = ({
+  stats,
+  onSelectCategory,
+  onStartScan,
+  onSelectSender,
+  onMassClear,
+}) => {
+  const [showMassCleaner, setShowMassCleaner] = React.useState(false);
+  const [customQuery, setCustomQuery] = React.useState('is:unread in:inbox');
+  const [customAction, setCustomAction] = React.useState<'delete' | 'archive'>('delete');
   const getHealthBadge = (score: number) => {
     if (score >= 85) {
       return {
@@ -172,9 +182,104 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, onSelectCategory, o
         </div>
       </div>
 
+      {/* Mass Direct Query Cleaner Banner (Ideal for 60,000+ Emails) */}
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-800/50 rounded-2xl p-5 sm:p-6 text-white shadow-xl relative overflow-hidden">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1 max-w-2xl">
+            <div className="flex items-center space-x-2">
+              <Sparkles className="h-5 w-5 text-indigo-400" />
+              <h3 className="font-bold text-lg text-white">Mass Inbox Query Cleaner (60k+ Emails)</h3>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Have tens of thousands of emails? Instantly bulk-delete or archive thousands of matching promotional, unread, or old emails directly via Gmail search query in seconds.
+            </p>
+          </div>
+          <div className="flex items-center space-x-3 shrink-0">
+            <button
+              onClick={() => setShowMassCleaner(!showMassCleaner)}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center space-x-1.5"
+            >
+              <Trash2 className="h-4 w-4" />
+              <span>{showMassCleaner ? 'Close Mass Cleaner' : 'Launch Mass Cleaner'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Mass Cleaner Form Panel */}
+        {showMassCleaner && (
+          <div className="mt-5 pt-5 border-t border-indigo-900/60 grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-950/60 p-4 rounded-xl">
+            <div className="md:col-span-2 space-y-2">
+              <label className="text-xs font-semibold text-slate-300">
+                Gmail Search Query (e.g., <code className="text-indigo-300">category:promotions</code>, <code className="text-indigo-300">is:unread older_than:1y</code>)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={customQuery}
+                  onChange={(e) => setCustomQuery(e.target.value)}
+                  placeholder="e.g., is:unread in:inbox"
+                  className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                />
+                <select
+                  value={customAction}
+                  onChange={(e) => setCustomAction(e.target.value as any)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="delete">Trash / Delete</option>
+                  <option value="archive">Archive (Remove from Inbox)</option>
+                </select>
+              </div>
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                <button
+                  onClick={() => setCustomQuery('category:promotions in:inbox')}
+                  className="text-[11px] px-2 py-0.5 rounded bg-indigo-950/80 text-indigo-300 hover:bg-indigo-900 border border-indigo-800/50"
+                >
+                  Promotions
+                </button>
+                <button
+                  onClick={() => setCustomQuery('is:unread in:inbox')}
+                  className="text-[11px] px-2 py-0.5 rounded bg-indigo-950/80 text-indigo-300 hover:bg-indigo-900 border border-indigo-800/50"
+                >
+                  All Unread
+                </button>
+                <button
+                  onClick={() => setCustomQuery('older_than:1y in:inbox')}
+                  className="text-[11px] px-2 py-0.5 rounded bg-indigo-950/80 text-indigo-300 hover:bg-indigo-900 border border-indigo-800/50"
+                >
+                  Older than 1 Year
+                </button>
+                <button
+                  onClick={() => setCustomQuery('label:UNREAD category:updates')}
+                  className="text-[11px] px-2 py-0.5 rounded bg-indigo-950/80 text-indigo-300 hover:bg-indigo-900 border border-indigo-800/50"
+                >
+                  Unread Updates
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col justify-end space-y-2">
+              <button
+                onClick={() => {
+                  if (onMassClear && customQuery.trim()) {
+                    onMassClear(customQuery.trim(), customAction);
+                  }
+                }}
+                className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold text-xs shadow-lg transition-all flex items-center justify-center space-x-1.5"
+              >
+                <Trash2 className="h-4 w-4" />
+                <span>Execute Mass Direct Clear</span>
+              </button>
+              <p className="text-[10px] text-slate-400 text-center">
+                Pages through all matching messages in Gmail and bulk modifies up to 100,000 emails.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Section 1: Cleanup Opportunity Cards */}
       <div>
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
           <div>
             <h3 className="text-lg font-bold text-slate-900 dark:text-white">
               Cleanup Opportunities
@@ -183,13 +288,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, onSelectCategory, o
               Select a card to review specific emails, select items, and run bulk actions safely.
             </p>
           </div>
-          <button
-            onClick={onStartScan}
-            className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center space-x-1"
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            <span>Refresh Scan</span>
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => onStartScan(5000)}
+              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+            >
+              Scan 5k
+            </button>
+            <button
+              onClick={() => onStartScan(50000)}
+              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors flex items-center space-x-1"
+            >
+              <Sparkles className="h-3 w-3" />
+              <span>Deep Scan (50k)</span>
+            </button>
+            <button
+              onClick={() => onStartScan(100000)}
+              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-purple-600 text-white hover:bg-purple-500 transition-colors"
+            >
+              Full Inbox Scan (100k)
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

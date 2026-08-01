@@ -93,6 +93,7 @@ export interface AppSettings {
   autoExcludeImportant: boolean;
   largeAttachmentMinMB: number;
   oldUnreadMonths: number;
+  scanLimit: number; // Max messages to scan (e.g. 5000, 15000, 50000, 100000)
 }
 
 export interface PendingAction {

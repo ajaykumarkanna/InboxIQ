@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
@@ -60,16 +61,41 @@ declare module 'express-session' {
   }
 }
 
-// In-memory or SQL.js DB for email metadata storage
+// SQL.js DB for email metadata storage with disk persistence
 let db: Database | null = null;
+const DB_DIR = path.join(process.cwd(), 'data');
+const DB_PATH = path.join(DB_DIR, 'inboxiq.sqlite');
+
+function saveDBToDisk() {
+  if (!db) return;
+  try {
+    if (!fs.existsSync(DB_DIR)) {
+      fs.mkdirSync(DB_DIR, { recursive: true });
+    }
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_PATH, buffer);
+  } catch (err) {
+    console.error('Failed to save SQLite DB to disk:', err);
+  }
+}
 
 async function initDB() {
   try {
     const SQL = await initSqlJs();
-    db = new SQL.Database();
+    if (fs.existsSync(DB_PATH)) {
+      const filebuffer = fs.readFileSync(DB_PATH);
+      db = new SQL.Database(filebuffer);
+      console.log('Loaded existing SQLite DB from disk:', DB_PATH);
+    } else {
+      db = new SQL.Database();
+      console.log('Created fresh SQLite DB');
+    }
+
     db.run(`
       CREATE TABLE IF NOT EXISTS email_metadata (
         id TEXT PRIMARY KEY,
+        userEmail TEXT,
         threadId TEXT,
         sender TEXT,
         senderEmail TEXT,
@@ -87,7 +113,15 @@ async function initDB() {
         unsubscribeUrl TEXT
       );
     `);
-    console.log('SQL.js database initialized successfully');
+
+    try {
+      db.run(`ALTER TABLE email_metadata ADD COLUMN userEmail TEXT;`);
+    } catch (e) {
+      // Column exists
+    }
+
+    saveDBToDisk();
+    console.log('SQL.js database initialized successfully with persistent disk storage');
   } catch (err) {
     console.error('Failed to initialize SQL.js database:', err);
   }
@@ -280,8 +314,17 @@ app.get('/api/emails', (req, res) => {
     return res.json([]);
   }
 
+  const currentUserEmail = req.session.user?.email;
+
   try {
-    const resSql = db.exec(`SELECT * FROM email_metadata ORDER BY timestamp DESC`);
+    let resSql: any[] = [];
+    if (currentUserEmail) {
+      const sanitizedEmail = currentUserEmail.replace(/'/g, "''");
+      resSql = db.exec(`SELECT * FROM email_metadata WHERE userEmail = '${sanitizedEmail}' OR userEmail IS NULL OR userEmail = '' ORDER BY timestamp DESC`);
+    } else {
+      resSql = db.exec(`SELECT * FROM email_metadata ORDER BY timestamp DESC`);
+    }
+
     if (!resSql || resSql.length === 0) {
       return res.json([]);
     }
@@ -440,6 +483,10 @@ function classifyEmail(headers: Record<string, string>, labelIds: string[], subj
 
 // 6. Trigger Scan Endpoint
 app.post('/api/scan', async (req, res) => {
+  const scanLimit = typeof req.body?.limit === 'number' ? req.body.limit : 100000;
+  const sendEmailReport = req.body?.sendEmailReport !== false; // Default true
+  const userEmail = req.session.user?.email || '';
+
   if (req.session.isDemo) {
     scanState = {
       status: 'scanning',
@@ -465,7 +512,7 @@ app.post('/api/scan', async (req, res) => {
       status: 'scanning',
       scannedCount: 0,
       totalFound: 0,
-      currentStep: 'Connecting to Gmail API...',
+      currentStep: 'Connecting to Gmail API & listing inbox messages...',
       progressPercent: 5,
       errorMessage: '',
     };
@@ -476,25 +523,50 @@ app.post('/api/scan', async (req, res) => {
     // Background scan pipeline
     (async () => {
       try {
-        // Step 1: List messages
-        scanState.currentStep = 'Fetching message listing...';
-        const listRes = await gmail.users.messages.list({
-          userId: 'me',
-          maxResults: 500, // Fetch top 500 for fast scanning
-          q: 'in:inbox',
-        });
+        // Step 1: Page through all messages in inbox up to scanLimit (default 100,000 / 1L)
+        scanState.currentStep = 'Gathering full inbox listing from Gmail...';
+        const messages: { id: string; threadId: string }[] = [];
+        let nextPageToken: string | undefined = undefined;
 
-        const messages = listRes.data.messages || [];
+        do {
+          const listRes: any = await gmail.users.messages.list({
+            userId: 'me',
+            maxResults: 500,
+            pageToken: nextPageToken,
+            q: 'in:inbox',
+          });
+
+          if (listRes.data.messages && listRes.data.messages.length > 0) {
+            messages.push(...listRes.data.messages);
+            scanState.totalFound = messages.length;
+            scanState.currentStep = `Found ${messages.length.toLocaleString()} inbox messages...`;
+          }
+
+          nextPageToken = listRes.data.nextPageToken || undefined;
+        } while (nextPageToken && messages.length < scanLimit);
+
         scanState.totalFound = messages.length;
-        scanState.progressPercent = 25;
+        scanState.progressPercent = 15;
 
-        // Clear existing DB table for fresh scan
+        // Clear existing DB table for fresh scan for this user
         if (db) {
-          db.run(`DELETE FROM email_metadata`);
+          if (userEmail) {
+            db.run(`DELETE FROM email_metadata WHERE userEmail = ?`, [userEmail]);
+          } else {
+            db.run(`DELETE FROM email_metadata`);
+          }
+          saveDBToDisk();
+        }
+
+        if (messages.length === 0) {
+          scanState.status = 'completed';
+          scanState.progressPercent = 100;
+          scanState.currentStep = 'Inbox is completely empty!';
+          return;
         }
 
         // Step 2: Fetch metadata in parallel batches
-        const BATCH_SIZE = 25;
+        const BATCH_SIZE = 50;
         for (let i = 0; i < messages.length; i += BATCH_SIZE) {
           const batch = messages.slice(i, i + BATCH_SIZE);
           scanState.currentStep = `Analyzing email metadata (${i + batch.length}/${messages.length})...`;
@@ -537,9 +609,10 @@ app.post('/api/scan', async (req, res) => {
 
                 if (db) {
                   db.run(
-                    `INSERT OR REPLACE INTO email_metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    `INSERT OR REPLACE INTO email_metadata (id, userEmail, threadId, sender, senderEmail, subject, snippet, date, timestamp, size, labelIds, category, hasAttachment, isUnread, isImportant, isStarred, unsubscribeUrl) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                     [
                       msgData.id,
+                      userEmail,
                       msgData.threadId,
                       senderName,
                       senderEmail,
@@ -565,12 +638,82 @@ app.post('/api/scan', async (req, res) => {
           );
 
           scanState.scannedCount = i + batch.length;
-          scanState.progressPercent = Math.min(95, Math.round(25 + ((i + batch.length) / messages.length) * 70));
+          scanState.progressPercent = Math.min(95, Math.round(15 + ((i + batch.length) / messages.length) * 80));
+
+          // Periodically flush database to disk every 500 emails
+          if ((i + BATCH_SIZE) % 500 === 0) {
+            saveDBToDisk();
+          }
         }
+
+        saveDBToDisk();
 
         scanState.status = 'completed';
         scanState.progressPercent = 100;
         scanState.currentStep = 'Mailbox analysis complete!';
+
+        // Send Email Report if enabled
+        if (sendEmailReport && userEmail && gmail) {
+          try {
+            const reportSubject = `InboxIQ Scan Report: ${messages.length.toLocaleString()} Emails Processed`;
+            const reportHtml = `
+              <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
+                <div style="margin-bottom: 20px;">
+                  <span style="font-size: 12px; font-weight: 700; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.05em;">InboxIQ Intelligence Report</span>
+                  <h2 style="color: #0f172a; margin: 6px 0 0 0; font-size: 22px;">Inbox Scan Completed Successfully 🎉</h2>
+                </div>
+
+                <p style="color: #475569; font-size: 14px; line-height: 1.6;">
+                  Your mailbox scan is finished! Your scan data is saved under <strong>${userEmail}</strong> and ready for cleanup.
+                </p>
+
+                <div style="background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 18px; margin: 20px 0;">
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                    <span style="color: #64748b; font-size: 13px;">Total Analyzed Messages:</span>
+                    <strong style="color: #0f172a; font-size: 14px;">${messages.length.toLocaleString()}</strong>
+                  </div>
+                  <div style="display: flex; justify-content: space-between;">
+                    <span style="color: #64748b; font-size: 13px;">Account:</span>
+                    <strong style="color: #0f172a; font-size: 14px;">${userEmail}</strong>
+                  </div>
+                </div>
+
+                <p style="font-size: 13px; color: #64748b; line-height: 1.5;">
+                  You can log back into your InboxIQ account at any time to run batch deletes, clean out old unread newsletters, or execute mass query clearances.
+                </p>
+
+                <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+                <p style="font-size: 11px; color: #94a3b8; text-align: center; margin: 0;">
+                  Sent automatically by InboxIQ Email Management System.
+                </p>
+              </div>
+            `;
+
+            const rawMessage = [
+              `To: ${userEmail}`,
+              `Subject: ${reportSubject}`,
+              'Content-Type: text/html; charset=utf-8',
+              '',
+              reportHtml,
+            ].join('\r\n');
+
+            const encodedMessage = Buffer.from(rawMessage)
+              .toString('base64')
+              .replace(/\+/g, '-')
+              .replace(/\//g, '_')
+              .replace(/=+$/, '');
+
+            await gmail.users.messages.send({
+              userId: 'me',
+              requestBody: {
+                raw: encodedMessage,
+              },
+            });
+            console.log(`Scan completion summary email sent to ${userEmail}`);
+          } catch (emailErr) {
+            console.error('Failed to send completion email:', emailErr);
+          }
+        }
       } catch (err: any) {
         console.error('Scan background error:', err);
         scanState.status = 'error';
@@ -588,7 +731,88 @@ app.get('/api/scan/progress', (req, res) => {
   res.json(scanState);
 });
 
-// 8. Execute Batch Actions (Trash / Archive)
+// 8. Execute Mass Direct Query Clearance (Fast 60k Clear)
+app.post('/api/mass-clear', async (req, res) => {
+  const { query, action } = req.body as { query: string; action: 'delete' | 'archive' };
+
+  if (!query) {
+    return res.status(400).json({ error: 'Search query is required' });
+  }
+
+  if (req.session.isDemo) {
+    return res.json({ success: true, clearedCount: 1250 });
+  }
+
+  if (!req.session.tokens) {
+    return res.status(401).json({ error: 'Not authenticated with Google' });
+  }
+
+  try {
+    const { client: oauth2Client } = getOAuth2Client(req);
+    oauth2Client.setCredentials(req.session.tokens);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    // Page through all messages matching the query
+    let matchingIds: string[] = [];
+    let nextPageToken: string | undefined = undefined;
+
+    do {
+      const listRes: any = await gmail.users.messages.list({
+        userId: 'me',
+        maxResults: 500,
+        pageToken: nextPageToken,
+        q: query,
+      });
+
+      if (listRes.data.messages && listRes.data.messages.length > 0) {
+        matchingIds.push(...listRes.data.messages.map((m: any) => m.id));
+      }
+
+      nextPageToken = listRes.data.nextPageToken || undefined;
+    } while (nextPageToken && matchingIds.length < 100000);
+
+    if (matchingIds.length === 0) {
+      return res.json({ success: true, clearedCount: 0 });
+    }
+
+    // Process batchModify in chunks of 1000
+    for (let i = 0; i < matchingIds.length; i += 1000) {
+      const chunk = matchingIds.slice(i, i + 1000);
+      if (action === 'delete') {
+        await gmail.users.messages.batchModify({
+          userId: 'me',
+          requestBody: {
+            ids: chunk,
+            addLabelIds: ['TRASH'],
+            removeLabelIds: ['INBOX'],
+          },
+        });
+      } else {
+        await gmail.users.messages.batchModify({
+          userId: 'me',
+          requestBody: {
+            ids: chunk,
+            removeLabelIds: ['INBOX'],
+          },
+        });
+      }
+    }
+
+    // Delete cleared entries from SQLite DB as well
+    if (db) {
+      const placeholders = matchingIds.map(() => '?').join(',');
+      db.run(`DELETE FROM email_metadata WHERE id IN (${placeholders})`, matchingIds);
+      saveDBToDisk();
+    }
+
+    res.json({ success: true, clearedCount: matchingIds.length });
+  } catch (err: any) {
+    console.error('Mass clear error:', err);
+    res.status(500).json({ error: err.message || 'Failed to mass clear emails' });
+  }
+});
+
+// 9. Execute Batch Actions (Trash / Archive)
 app.post('/api/batch-action', async (req, res) => {
   const { action, messageIds } = req.body as { action: 'delete' | 'archive' | 'keep'; messageIds: string[] };
 
@@ -610,25 +834,34 @@ app.post('/api/batch-action', async (req, res) => {
     oauth2Client.setCredentials(req.session.tokens);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-    if (action === 'delete') {
-      // Batch modify to move to TRASH
-      await gmail.users.messages.batchModify({
-        userId: 'me',
-        requestBody: {
-          ids: messageIds,
-          addLabelIds: ['TRASH'],
-          removeLabelIds: ['INBOX'],
-        },
-      });
-    } else if (action === 'archive') {
-      // Remove INBOX label
-      await gmail.users.messages.batchModify({
-        userId: 'me',
-        requestBody: {
-          ids: messageIds,
-          removeLabelIds: ['INBOX'],
-        },
-      });
+    // Process in chunks of 1000 to observe Gmail API batchModify limit
+    for (let i = 0; i < messageIds.length; i += 1000) {
+      const chunk = messageIds.slice(i, i + 1000);
+      if (action === 'delete') {
+        await gmail.users.messages.batchModify({
+          userId: 'me',
+          requestBody: {
+            ids: chunk,
+            addLabelIds: ['TRASH'],
+            removeLabelIds: ['INBOX'],
+          },
+        });
+      } else if (action === 'archive') {
+        await gmail.users.messages.batchModify({
+          userId: 'me',
+          requestBody: {
+            ids: chunk,
+            removeLabelIds: ['INBOX'],
+          },
+        });
+      }
+    }
+
+    // Delete cleared entries from SQLite DB as well
+    if (db) {
+      const placeholders = messageIds.map(() => '?').join(',');
+      db.run(`DELETE FROM email_metadata WHERE id IN (${placeholders})`, messageIds);
+      saveDBToDisk();
     }
 
     res.json({ success: true, affectedCount: messageIds.length });
