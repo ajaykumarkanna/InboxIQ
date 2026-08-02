@@ -200,7 +200,7 @@ app.get('/api/auth/google', (req, res) => {
 });
 
 // 2. OAuth Callback
-app.get('/auth/callback', async (req, res) => {
+app.get(['/auth/callback', '/api/auth/google/callback'], async (req, res) => {
   const code = req.query.code as string;
   if (!code) {
     return res.status(400).send('No authorization code received.');
