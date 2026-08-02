@@ -1,5 +1,3 @@
-const FALLBACK_BACKEND_URL = 'https://ais-dev-hxuxcu2k5itvf72mxzgqxe-85757847218.asia-southeast1.run.app';
-
 export const getApiBaseUrl = (): string => {
   const env = (import.meta as any).env || {};
   let envUrl = (env.VITE_API_URL || env.VITE_SERVER_URL || '').trim();
@@ -27,11 +25,7 @@ export const getApiBaseUrl = (): string => {
     return envUrl.replace(/\/$/, '');
   }
 
-  // Fall back to Cloud Run server if running on GitHub Pages
-  if (typeof window !== 'undefined' && window.location.hostname.includes('github.io')) {
-    return FALLBACK_BACKEND_URL;
-  }
-
+  // Relative API routing for same-origin server deployment
   return '';
 };
 
