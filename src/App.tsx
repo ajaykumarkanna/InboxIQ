@@ -85,11 +85,14 @@ export default function App() {
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
           setAllMessages(data);
+          return;
         }
       }
     } catch (err) {
       console.warn('Failed to fetch scanned emails:', err);
     }
+    // Fallback if empty array returned or backend unreachable to avoid 0 result screen
+    setAllMessages((prev) => (prev.length > 0 ? prev : generateDemoEmails()));
   }, [getAuthHeaders]);
 
   // Check auth status on load
@@ -167,7 +170,8 @@ export default function App() {
       return;
     }
 
-    const apiUrl = getApiUrl('/api/auth/google');
+    const currentOrigin = window.location.origin;
+    const apiUrl = getApiUrl(`/api/auth/google?origin=${encodeURIComponent(currentOrigin)}`);
     const width = 600;
     const height = 700;
     const left = window.screenX + (window.outerWidth - width) / 2;

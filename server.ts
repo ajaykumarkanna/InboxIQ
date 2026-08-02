@@ -179,6 +179,7 @@ function getOAuth2Client(req?: express.Request) {
 // 1. Google OAuth Initiate
 app.get('/api/auth/google', (req, res) => {
   const { client: oauth2Client, redirectUri } = getOAuth2Client(req);
+  const reqOrigin = (req.query.origin as string) || (req.headers.referer ? new URL(req.headers.referer).origin : '');
   const scopes = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.modify',
@@ -192,6 +193,7 @@ app.get('/api/auth/google', (req, res) => {
     prompt: 'consent',
     scope: scopes,
     redirect_uri: redirectUri,
+    state: reqOrigin ? Buffer.from(JSON.stringify({ origin: reqOrigin })).toString('base64') : undefined,
   });
 
   res.redirect(authUrl);
@@ -208,6 +210,16 @@ app.get('/auth/callback', async (req, res) => {
     const { client: oauth2Client } = getOAuth2Client(req);
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
+
+    let targetOrigin = '';
+    if (req.query.state) {
+      try {
+        const stateObj = JSON.parse(Buffer.from(req.query.state as string, 'base64').toString('utf8'));
+        if (stateObj.origin) {
+          targetOrigin = stateObj.origin;
+        }
+      } catch (e) {}
+    }
 
     // Fetch user profile info
     const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
@@ -246,6 +258,7 @@ app.get('/auth/callback', async (req, res) => {
           <script>
             const token = "${sessionToken}";
             const user = ${JSON.stringify(userObj)};
+            const origin = "${targetOrigin}";
             if (window.opener) {
               try {
                 window.opener.postMessage({ type: 'OAUTH_SUCCESS', token, user }, '*');
@@ -253,6 +266,8 @@ app.get('/auth/callback', async (req, res) => {
               setTimeout(() => {
                 window.close();
               }, 300);
+            } else if (origin) {
+              window.location.href = origin + '/?auth_token=' + token;
             } else {
               window.location.href = '/?auth_token=' + token;
             }
@@ -565,6 +580,28 @@ app.post('/api/scan', async (req, res) => {
           nextPageToken = listRes.data.nextPageToken || undefined;
         } while (nextPageToken && messages.length < scanLimit);
 
+        // Fallback search if in:inbox returned 0 messages
+        if (messages.length === 0) {
+          scanState.currentStep = 'Searching full mailbox folders...';
+          let fallbackPageToken: string | undefined = undefined;
+          do {
+            const listResAll: any = await gmail.users.messages.list({
+              userId: 'me',
+              maxResults: 500,
+              pageToken: fallbackPageToken,
+              q: '-in:trash -in:spam',
+            });
+
+            if (listResAll.data.messages && listResAll.data.messages.length > 0) {
+              messages.push(...listResAll.data.messages);
+              scanState.totalFound = messages.length;
+              scanState.currentStep = `Found ${messages.length.toLocaleString()} mailbox messages...`;
+            }
+
+            fallbackPageToken = listResAll.data.nextPageToken || undefined;
+          } while (fallbackPageToken && messages.length < scanLimit);
+        }
+
         scanState.totalFound = messages.length;
         scanState.progressPercent = 15;
 
@@ -581,7 +618,7 @@ app.post('/api/scan', async (req, res) => {
         if (messages.length === 0) {
           scanState.status = 'completed';
           scanState.progressPercent = 100;
-          scanState.currentStep = 'Inbox is completely empty!';
+          scanState.currentStep = 'Inbox scan complete!';
           return;
         }
 
