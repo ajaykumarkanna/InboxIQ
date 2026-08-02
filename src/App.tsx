@@ -156,20 +156,6 @@ export default function App() {
 
   // Connect Google OAuth Popup
   const handleConnectGmail = () => {
-    const isGitHubPages = window.location.hostname.includes('github.io');
-    const apiBaseUrl = getApiBaseUrl();
-
-    // If on GitHub Pages and no custom VITE_API_URL set, warn user or fall back gracefully
-    if (isGitHubPages && !apiBaseUrl) {
-      const confirmDemo = window.confirm(
-        'InboxIQ is currently running as a static site on GitHub Pages without a backend URL configured.\n\nTo connect live Gmail accounts on GitHub Pages, set VITE_API_URL in your repository settings or build workflow.\n\nWould you like to try Instant Demo Mode now instead?'
-      );
-      if (confirmDemo) {
-        handleTryDemo();
-      }
-      return;
-    }
-
     const currentOrigin = window.location.origin;
     const apiUrl = getApiUrl(`/api/auth/google?origin=${encodeURIComponent(currentOrigin)}`);
     const width = 600;
